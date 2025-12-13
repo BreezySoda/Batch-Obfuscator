@@ -1,6 +1,6 @@
 # Batch Obfuscator
 Fast Batch obfuscation tool!
 
-This tool is not licensed. Additionally, we have completed checking the operation of the tool and the operation of the batch after obfuscation.
+This tool is not licensed. All responsibility for this programme lies with the user; the creator accepts no liability whatsoever.
 
 **Languages**: en-US
