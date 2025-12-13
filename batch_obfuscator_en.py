@@ -1,77 +1,172 @@
 # -*- coding: utf-8 -*-
-from os import system
-from os.path import isfile
-from random import shuffle, choice
+"""
+Batch obfuscator with token-aware handling of:
+- labels (:label)
+- variable references (%VAR%), delayed !VAR!
+- command operators: &&, ||, &, | 
+- redirects: >, >>, 2>, 2>>, < etc.
+"""
+
+from __future__ import annotations
+import argparse
+import random
+import shutil
+import sys
+from pathlib import Path
+from typing import Dict, List, Tuple
+
+ALPHABET = list("0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ @=")
+KEY_PREFIX = "VAR"
+NUM_KEYS = 5
+
+OPERATORS = ["&&", "||", ">>", "2>>", "2>", "1>", "1>>", ">|", "&", "|", ">", "<", ";"]
+
 
 def clean_comments(content: str) -> str:
-    return '\n'.join([line for line in content.splitlines() if not line.strip().lower().startswith(('::', 'rem'))])
+    out_lines: List[str] = []
+    for ln in content.splitlines():
+        stripped = ln.lstrip()
+        low = stripped.lower()
+        if low.startswith("rem ") or low == "rem" or low.startswith("::"):
+            continue
+        out_lines.append(ln)
+    return "\n".join(out_lines)
 
-def generate_substrings() -> dict:
-    alphabet = list("0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ @=")
-    keys = ["VAR" + str(i) for i in range(5)]
-    mapping = {}
-    for key in keys:
-        shuffle(alphabet)
-        mapping[key] = ''.join(alphabet)
+
+def generate_substrings(num_keys: int = NUM_KEYS, alphabet: List[str] = ALPHABET) -> Dict[str, str]:
+    mapping: Dict[str, str] = {}
+    base = alphabet[:]
+    for i in range(num_keys):
+        pool = base[:]
+        random.shuffle(pool)
+        mapping[f"{KEY_PREFIX}{i}"] = "".join(pool)
     return mapping
 
-def obfuscate_with_substrings(content: str, mapping: dict) -> str:
-    keys = list(mapping.keys())
-    values = list(mapping.values())
-    result_lines = []
-    for line in content.splitlines():
-        if line.startswith(':'):
-            result_lines.append(line)
-            continue
-        new_line = ''
-        skip = False
-        for ch in line:
-            if skip:
-                new_line += ch
-                if ch in ['%', '!']: skip = False
-                continue
-            if ch in ['%', '!']:
-                skip = True
-                new_line += ch
-                continue
-            for i, val in enumerate(values):
-                if ch in val:
-                    new_line += f"%{keys[i]}:~{val.find(ch)},1%"
-                    break
-            else:
-                new_line += ch
-        result_lines.append(new_line)
-    return '\n'.join(result_lines)
 
-def generate_set_lines(mapping: dict) -> list:
+def tokenize_line(line: str) -> List[Tuple[str, str]]:
+    """
+    Tokenize a line into list of (type, text).
+    Types: 'label', 'varref', 'delayed', 'op', 'text'
+    """
+    tokens: List[Tuple[str, str]] = []
+    i = 0
+    if line.startswith(":"):
+        return [("label", line)]
+    while i < len(line):
+        ch = line[i]
+        if ch == "%":
+            j = i + 1
+            while j < len(line) and line[j] != "%":
+                j += 1
+            if j < len(line):
+                tokens.append(("varref", line[i:j+1]))
+                i = j + 1
+                continue
+            else:
+                tokens.append(("text", ch))
+                i += 1
+                continue
+        if ch == "!":
+            j = i + 1
+            while j < len(line) and line[j] != "!":
+                j += 1
+            if j < len(line):
+                tokens.append(("delayed", line[i:j+1]))
+                i = j + 1
+                continue
+            else:
+                tokens.append(("text", ch))
+                i += 1
+                continue
+        matched = False
+        for op in OPERATORS:
+            if line.startswith(op, i):
+                tokens.append(("op", op))
+                i += len(op)
+                matched = True
+                break
+        if matched:
+            continue
+        j = i
+        while j < len(line) and line[j] not in "%!":
+            if any(line.startswith(op, j) for op in OPERATORS):
+                break
+            j += 1
+        tokens.append(("text", line[i:j]))
+        i = j
+    return tokens
+
+
+def obfuscate_with_substrings(content: str, mapping: Dict[str, str]) -> str:
+    keys = list(mapping.keys())
+    values = [mapping[k] for k in keys]
+    out_lines: List[str] = []
+
+    for line in content.splitlines():
+        if line.startswith(":"):
+            out_lines.append(line)
+            continue
+        toks = tokenize_line(line)
+        new_parts: List[str] = []
+        for ttype, txt in toks:
+            if ttype in ("label", "varref", "delayed", "op"):
+                new_parts.append(txt)
+                continue
+            buf: List[str] = []
+            for ch in txt:
+                replaced = False
+                for idx, val in enumerate(values):
+                    pos = val.find(ch)
+                    if pos != -1:
+                        buf.append(f"%{keys[idx]}:~{pos},1%")
+                        replaced = True
+                        break
+                if not replaced:
+                    buf.append(ch)
+            new_parts.append("".join(buf))
+        out_lines.append("".join(new_parts))
+    return "\n".join(out_lines)
+
+
+def generate_set_lines(mapping: Dict[str, str]) -> List[str]:
     return [f'set "{k}={v}"' for k, v in mapping.items()]
 
-def main():
-    print("Fast Batch obfuscation tool")
-    filepath = input("Please drop Batch file: ").strip().strip('"')
-    if not isfile(filepath):
-        print("File not found.")
-        return
 
-    with open(filepath, 'r', encoding='utf-8') as f:
-        content = f.read()
+def backup_if_exists(path: Path) -> None:
+    if path.exists():
+        backup = path.with_suffix(path.suffix + ".bak")
+        shutil.copy2(path, backup)
 
-    content = clean_comments(content)
-    substrs = generate_substrings()
-    set_lines = generate_set_lines(substrs)
-    obfuscated = obfuscate_with_substrings(content, substrs)
 
-    final_output = "@echo off\n" + '\n'.join(set_lines) + '\n' + obfuscated
-    output_path = filepath.rsplit('.', 1)[0] + "-obf.bat"
+def process_file(path: Path, num_keys: int = NUM_KEYS) -> Path:
+    if not path.exists() or not path.is_file():
+        raise FileNotFoundError(path)
+    raw = path.read_text(encoding="utf-8", errors="replace")
+    cleaned = clean_comments(raw)
+    mapping = generate_substrings(num_keys=num_keys)
+    set_lines = generate_set_lines(mapping)
+    body = obfuscate_with_substrings(cleaned, mapping)
+    out = "@echo off\n" + "\n".join(set_lines) + "\n" + body + "\n"
+    out_path = path.with_name(path.stem + "-obf" + path.suffix)
+    backup_if_exists(out_path)
+    out_path.write_text(out, encoding="utf-8")
+    return out_path
 
-    with open(output_path, 'w', encoding='utf-8') as f:
-        f.write(final_output)
 
-    print("Obfuscated Batch file has been outputted:", output_path)
+def cli() -> int:
+    p = argparse.ArgumentParser(description="Batch (.bat) obfuscator (handles &&, ||, >, |, etc.)")
+    p.add_argument("file", type=Path, help="Path to .bat file")
+    p.add_argument("--keys", type=int, default=NUM_KEYS, help="Number of VAR keys to generate")
+    args = p.parse_args()
+
     try:
-        system('pause >nul')
-    except:
-        pass
+        out = process_file(args.file, num_keys=args.keys)
+        print("Obfuscated Batch written to:", out)
+    except Exception as e:
+        print("Error:", e, file=sys.stderr)
+        return 2
+    return 0
 
-if __name__ == '__main__':
-    main()
+
+if __name__ == "__main__":
+    raise SystemExit(cli())
