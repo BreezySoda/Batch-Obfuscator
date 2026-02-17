@@ -1,6 +1,6 @@
 # Batch Obfuscator
-Fast Batch obfuscation tool!
+You can quickly obfuscate batches.
+バッチを素早く難読化できます。
 
-This tool is not licensed. All responsibility for this programme lies with the user; the creator accepts no liability whatsoever.
-
-**Languages**: en-US
+This software is not licensed. All responsibility rests with the user.
+このソフトにはライセンスが付与されていません。すべての責任は使用者にあります。
